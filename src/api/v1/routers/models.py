@@ -1,20 +1,41 @@
-from typing import Any
+from datetime import datetime
+from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-from src.api.schemas.models import ModelList
-from src.api.services.ollama import OllamaService, get_ollama_service
-from src.config.app_state import app_state
+from src.api.v1.services import setting_service
+from src.api.v1.services.ollama_service import OllamaService, get_ollama_service
+from src.db.database import get_db
+
+# ==============================================================================
+# Pydantic Models
+# ==============================================================================
+
+
+class ModelDetails(BaseModel):
+    name: str = Field(alias="model")
+    modified_at: datetime
+    size: int
+
+
+class ModelList(BaseModel):
+    models: List[ModelDetails]
+
+
+class PullRequest(BaseModel):
+    name: str
+
+
+# ==============================================================================
+# Router
+# ==============================================================================
 
 router = APIRouter(
     prefix="/api/v1/models",
     tags=["models"],
 )
-
-
-class PullRequest(BaseModel):
-    name: str
 
 
 @router.get(
@@ -63,6 +84,7 @@ async def remove_model(
 @router.post("/switch/{model_name:path}", summary="Switch the active generation model")
 async def switch_active_model(
     model_name: str,
+    db: Session = Depends(get_db),
     ollama_service: OllamaService = Depends(get_ollama_service),
 ):
     """
@@ -79,5 +101,5 @@ async def switch_active_model(
             detail=f"Model '{model_name}' not found locally. Please pull it first.",
         )
 
-    app_state.set_current_model(model_name)
+    setting_service.set_active_model(db, model_name)
     return {"message": f"Switched active model to {model_name}"}

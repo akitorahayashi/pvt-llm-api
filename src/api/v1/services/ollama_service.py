@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 import ollama
-from src.api.schemas.generate import GenerateResponse
+from src.api.v1.schemas import GenerateResponse
 
 
 class OllamaService:
@@ -21,10 +21,16 @@ class OllamaService:
         Processes a streaming response from `ollama.chat` and yields SSE events.
         """
         try:
-            for chunk in response_iter:
-                content = chunk.get("message", {}).get("content")
-                if content:
-                    yield f"data: {content}\n\n"
+            # The iterator from the client is blocking, so we must iterate in a threadpool.
+            iterator = await run_in_threadpool(iter, response_iter)
+            while True:
+                try:
+                    chunk = await run_in_threadpool(next, iterator)
+                    content = chunk.get("message", {}).get("content")
+                    if content:
+                        yield f"data: {content}\n\n"
+                except StopIteration:
+                    break
         except (httpx.RequestError, ollama.ResponseError):
             logging.exception("Error during Ollama chat response streaming.")
             raise

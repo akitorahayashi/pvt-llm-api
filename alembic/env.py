@@ -4,7 +4,7 @@ from pydantic import ValidationError
 
 from sqlalchemy import create_engine, pool
 
-import src.db.models.log  # noqa: F401
+import src.db.models  # noqa: F401
 from alembic import context
 from src.db.database import Base
 from src.config.settings import Settings

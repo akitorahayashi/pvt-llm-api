@@ -9,7 +9,7 @@
 # ==============================================================================
 
 # Ensure that the targets are always run
-.PHONY: help setup up down logs shell format format-check lint lint-check test migrate
+.PHONY: help setup up down logs shell format format-check lint lint-check test migrate clean rebuild
 
 # Default target executed when 'make' is run without arguments
 .DEFAULT_GOAL := help
@@ -63,6 +63,15 @@ down: ## Stop and remove all development containers
 	@echo "Shutting down development services..."
 	@ln -sf .env.dev .env
 	$(SUDO) docker compose -f docker-compose.yml -f docker-compose.override.yml --project-name $(DEV_PROJECT_NAME) down --remove-orphans
+
+clean: ## Stop and remove all dev containers, networks, and volumes (use with CONFIRM=1)
+	@if [ "$(CONFIRM)" != "1" ]; then \
+		echo "This is a destructive operation. Please run 'make clean CONFIRM=1' to confirm."; \
+		exit 1; \
+	fi
+	@echo "Cleaning up all development Docker resources (including volumes)..."
+	@ln -sf .env.dev .env
+	$(SUDO) docker compose -f docker-compose.yml -f docker-compose.override.yml --project-name $(DEV_PROJECT_NAME) down --volumes --remove-orphans
 
 rebuild: ## Rebuild the api service without cache and restart it
 	@echo "Rebuilding api service with --no-cache..."

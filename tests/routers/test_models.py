@@ -3,9 +3,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.orm import Session
 from starlette import status
+from starlette.responses import StreamingResponse
 
-from src.api.schemas.generate import GenerateResponse
+from src.api.v1.services import setting_service
 
 # Mark all tests in this file as asyncio
 pytestmark = pytest.mark.asyncio
@@ -14,9 +16,7 @@ pytestmark = pytest.mark.asyncio
 async def test_get_models(client: AsyncClient, mock_ollama_service: MagicMock):
     """Test the GET /api/v1/models endpoint with a realistic mock."""
     # Arrange
-    # Pydantic serializes datetimes to a specific ISO format, so we match it.
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
     mock_response = {
         "models": [
             {
@@ -33,7 +33,6 @@ async def test_get_models(client: AsyncClient, mock_ollama_service: MagicMock):
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    # Pydantic will format the datetime string in the response, so we compare against that.
     response_data = response.json()
     assert response_data["models"][0]["model"] == "test-model:latest"
     assert response_data["models"][0]["size"] == 12345
@@ -56,7 +55,6 @@ async def test_pull_model_no_stream(
     # Assert
     assert response.status_code == status.HTTP_200_OK
     assert response.json() == {"status": "success"}
-    # The `stream` parameter is passed positionally by FastAPI from the query params.
     mock_ollama_service.pull_model.assert_called_once_with(model_name, False)
 
 
@@ -66,7 +64,13 @@ async def test_pull_model_streaming(
     """Test the POST /api/v1/models/pull endpoint with SSE streaming."""
     # Arrange
     model_name = "streaming-model:latest"
-    mock_ollama_service.pull_model.return_value = "mocked streaming response"
+
+    async def mock_stream_content():
+        yield "mocked streaming response"
+
+    mock_ollama_service.pull_model.return_value = StreamingResponse(
+        mock_stream_content(), media_type="text/event-stream"
+    )
 
     # Act
     response = await client.post(
@@ -75,7 +79,7 @@ async def test_pull_model_streaming(
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    # The `stream` parameter is passed positionally.
+    assert response.headers["content-type"].startswith("text/event-stream")
     mock_ollama_service.pull_model.assert_called_once_with(model_name, True)
 
 
@@ -87,9 +91,10 @@ async def test_delete_model(client: AsyncClient, mock_ollama_service: MagicMock)
 
 
 async def test_switch_active_model_success(
-    client: AsyncClient, mock_ollama_service: MagicMock
+    client: AsyncClient, mock_ollama_service: MagicMock, db_session: Session
 ):
     """Test successfully switching the active model."""
+    # Arrange
     model_name = "existing-model:latest"
     mock_ollama_service.list_models.return_value = {
         "models": [
@@ -101,30 +106,33 @@ async def test_switch_active_model_success(
         ]
     }
 
+    # Act
     response = await client.post(f"/api/v1/models/switch/{model_name}")
+
+    # Assert
     assert response.status_code == status.HTTP_200_OK
     assert response.json() == {"message": f"Switched active model to {model_name}"}
 
-    # Verify that the generate endpoint now uses this model
-    mock_ollama_service.generate_response.return_value = GenerateResponse(
-        response="response from switched model"
-    )
-    await client.post("/api/v1/generate", json={"prompt": "test", "stream": False})
-
-    mock_ollama_service.generate_response.assert_called_once_with(
-        prompt="test", model_name=model_name, stream=False
-    )
+    # Verify that the model check was performed
+    mock_ollama_service.list_models.assert_called_once()
+    # Verify that the change was persisted in the database
+    active_model_from_db = setting_service.get_active_model(db_session)
+    assert active_model_from_db == model_name
 
 
 async def test_switch_active_model_not_found(
     client: AsyncClient, mock_ollama_service: MagicMock
 ):
     """Test switching to a model that does not exist locally."""
+    # Arrange
     model_name = "non-existent-model:latest"
     mock_ollama_service.list_models.return_value = {
         "models": [{"model": "another-model:latest"}]
     }
 
+    # Act
     response = await client.post(f"/api/v1/models/switch/{model_name}")
+
+    # Assert
     assert response.status_code == status.HTTP_404_NOT_FOUND
     assert "not found locally" in response.json()["detail"]

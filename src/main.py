@@ -3,19 +3,44 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.orm import Session
 
 import ollama
-from src.api.routers import generate, models
-from src.config.app_state import app_state
+from src.api.v1.routers import generate, models
+from src.api.v1.services import setting_service
 from src.config.settings import Settings
+from src.db.database import create_db_session
 from src.middlewares.db_logging_middleware import LoggingMiddleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Application lifespan manager.
+
+    - On startup, it checks if a default model is set in the database.
+      If not, it initializes it using the value from the environment settings.
+    - On shutdown, it performs any necessary cleanup.
+    """
     # Startup logic
-    settings = Settings()
-    app_state.set_current_model(settings.DEFAULT_GENERATION_MODEL)
+    db: Session = create_db_session()
+    try:
+        # Check if an active model is already set in the database
+        active_model = setting_service.get_active_model(db)
+        if not active_model:
+            # If not, initialize it with the default from settings
+            settings = Settings()
+            setting_service.set_active_model(db, settings.DEFAULT_GENERATION_MODEL)
+    except (OperationalError, ProgrammingError) as e:
+        # If the database is not ready or migrations are not applied,
+        # this will raise a more informative error.
+        raise RuntimeError(
+            "Database is not ready. Please ensure it is running and migrations are applied."
+        ) from e
+    finally:
+        db.close()
+
     yield
     # Shutdown logic (if any)
 
@@ -34,7 +59,7 @@ app = FastAPI(
 app.add_middleware(LoggingMiddleware)
 
 
-# Include the routers
+# Include the routers from the v1 API
 app.include_router(generate.router)
 app.include_router(models.router)
 
